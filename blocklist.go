@@ -2,6 +2,9 @@ package blocklist
 
 import (
 	"context"
+	"fmt"
+	"io/ioutil"
+	"net/http"
 
 	"github.com/coredns/coredns/plugin"
 	"github.com/coredns/coredns/plugin/metrics"
@@ -20,23 +23,80 @@ type Blocklist struct {
 	allowDomains  map[string]bool
 	Next          plugin.Handler
 	domainMetrics bool
+	remote        string
+	mux           *http.ServeMux
 }
 
-func NewBlocklistPlugin(next plugin.Handler, blockDomains []string, allowDomains []string, domainMetrics bool) Blocklist {
+func (b *Blocklist) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	b.mux.ServeHTTP(w, r)
+}
+
+func (b *Blocklist) block(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		for k := range b.blockDomains {
+			fmt.Fprintf(w, "%s\n", k)
+		}
+	case http.MethodPut:
+		body, _ := ioutil.ReadAll(r.Body)
+		r.Body.Close()
+		b.blockDomains = toMap(strings.Split(string(body), "\n"))
+	case http.MethodDelete:
+		b.blockDomains = map[string]bool{}
+	case http.MethodPatch:
+		body, _ := ioutil.ReadAll(r.Body)
+		r.Body.Close()
+		remove := []string{}
+		add := []string{}
+		for _, line := range strings.Split(string(body), "\n") {
+			if strings.HasPrefix(line, "-") {
+				remove = append(remove, strings.TrimLeft(line[1:], " "))
+			} else {
+				add = append(add, strings.TrimLeft(line, " "))
+			}
+		}
+		for k := range toMap(add) {
+			b.blockDomains[k] = true
+		}
+		for k := range toMap(remove) {
+			delete(b.blockDomains, k)
+		}
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func NewBlocklistPlugin(next plugin.Handler, blockDomains []string, allowDomains []string, domainMetrics bool, remote string) Blocklist {
 
 	log.Debugf(
-		"Creating blocklist plugin with %d blocks, %d allows, and domain metrics set to %v",
+		"Creating blocklist plugin with %d blocks, %d allows, domain metrics set to %v and remote api set to %v",
 		len(blockDomains),
 		len(allowDomains),
 		domainMetrics,
+		remote,
 	)
 
-	return Blocklist{
+	b := Blocklist{
 		blockDomains:  toMap(blockDomains),
 		allowDomains:  toMap(allowDomains),
 		Next:          next,
 		domainMetrics: domainMetrics,
+		remote:        remote,
+		mux:           http.NewServeMux(),
 	}
+
+	b.mux.HandleFunc("/block", b.block)
+	if remote != "" {
+		go func() {
+			log.Infof("Listen remote api: http://%s/", remote)
+			err := http.ListenAndServe(remote, b.mux)
+			if err != nil {
+				panic(err)
+			}
+		}()
+	}
+
+	return b
 }
 
 // ServeDNS handles processing the DNS query in relation to the blocklist

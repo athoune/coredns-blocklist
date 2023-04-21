@@ -7,6 +7,7 @@
   blocklist blocklist.txt {
     allowlist allowlist.txt
     domain_metrics
+    remote 127.0.0.1:8888
   }
 
   forward . 1.1.1.1 1.0.0.1

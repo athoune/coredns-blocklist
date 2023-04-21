@@ -16,6 +16,7 @@ func setup(c *caddy.Controller) error {
 		var blocklistLocation string
 		var allowlistLocation string
 		var allowlist []string
+		var remote string
 		c.Args(&blocklistLocation)
 
 		if blocklistLocation == "" {
@@ -35,6 +36,8 @@ func setup(c *caddy.Controller) error {
 				log.Debugf("Setting allowlist location to %s", allowlistLocation)
 			case "domain_metrics":
 				domainMetrics = true
+			case "remote":
+				remote = c.RemainingArgs()[0]
 			default:
 				return plugin.Error("blocklist", c.Errf("unexpected '%v' command", option))
 			}
@@ -58,7 +61,7 @@ func setup(c *caddy.Controller) error {
 
 		dnsserver.GetConfig(c).
 			AddPlugin(func(next plugin.Handler) plugin.Handler {
-				return NewBlocklistPlugin(next, blocklist, allowlist, domainMetrics)
+				return NewBlocklistPlugin(next, blocklist, allowlist, domainMetrics, remote)
 			})
 	}
 
