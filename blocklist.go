@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"sync"
 
 	"github.com/coredns/coredns/plugin"
 	"github.com/coredns/coredns/plugin/metrics"
@@ -25,23 +26,27 @@ type Blocklist struct {
 	domainMetrics bool
 	remote        string
 	mux           *http.ServeMux
-}
-
-func (b *Blocklist) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	b.mux.ServeHTTP(w, r)
+	lock          *sync.RWMutex
 }
 
 func (b *Blocklist) block(w http.ResponseWriter, r *http.Request) {
+	log.Debugf("%v %s %s %v", r.RemoteAddr, r.Method, r.RequestURI, r.UserAgent())
 	switch r.Method {
 	case http.MethodGet:
+		b.lock.RLock()
+		defer b.lock.RUnlock()
 		for k := range b.blockDomains {
 			fmt.Fprintf(w, "%s\n", k)
 		}
 	case http.MethodPut:
+		b.lock.Lock()
+		defer b.lock.Unlock()
 		body, _ := ioutil.ReadAll(r.Body)
 		r.Body.Close()
 		b.blockDomains = toMap(strings.Split(string(body), "\n"))
 	case http.MethodDelete:
+		b.lock.Lock()
+		defer b.lock.Unlock()
 		b.blockDomains = map[string]bool{}
 	case http.MethodPatch:
 		body, _ := ioutil.ReadAll(r.Body)
@@ -55,11 +60,15 @@ func (b *Blocklist) block(w http.ResponseWriter, r *http.Request) {
 				add = append(add, strings.TrimLeft(line, " "))
 			}
 		}
-		for k := range toMap(add) {
-			b.blockDomains[k] = true
-		}
-		for k := range toMap(remove) {
-			delete(b.blockDomains, k)
+		if len(add) > 0 || len(remove) > 0 {
+			b.lock.Lock()
+			defer b.lock.Unlock()
+			for k := range toMap(add) {
+				b.blockDomains[k] = true
+			}
+			for k := range toMap(remove) {
+				delete(b.blockDomains, k)
+			}
 		}
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -83,6 +92,7 @@ func NewBlocklistPlugin(next plugin.Handler, blockDomains []string, allowDomains
 		domainMetrics: domainMetrics,
 		remote:        remote,
 		mux:           http.NewServeMux(),
+		lock:          &sync.RWMutex{},
 	}
 
 	b.mux.HandleFunc("/block", b.block)
